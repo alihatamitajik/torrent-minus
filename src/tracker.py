@@ -122,7 +122,7 @@ class Tracker(UdpServer):
         """Initialize"""
         super().__init__(conf)
         self._init_logger(conf)
-        self.ttl = float(logging.config.fileConfig(conf['SETTING']['PTTL']))
+        self.ttl = float(conf['SETTING']['PTTL'])
         self.db_lock = threading.Lock()
         self.peer_lock = threading.Lock()
         self.id_lock = threading.Lock()
@@ -208,11 +208,11 @@ class Tracker(UdpServer):
         Returns:
             File: created file
         """
-        file = File(file, size, client)
+        db_file = File(file, size, client)
         # TODO: log
         with self.db_lock:
-            self.torrent_db[file] = file
-        return file
+            self.torrent_db[file] = db_file
+        return db_file
 
     def add_peer(self, client, file: File):
         """Adds a peer to the system serving file
@@ -342,3 +342,4 @@ def load_config():
 if __name__ == "__main__":
     conf = load_config()
     tracker = Tracker(conf)
+    tracker.start_server()
