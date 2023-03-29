@@ -3,6 +3,8 @@ import configparser
 import socket
 import signal
 import threading
+import logging
+import logging.config
 
 SERVER_CONFIG = 'conf/server.conf'
 
@@ -72,6 +74,25 @@ class UdpServer:
         print('Shutting down UDP server...')
 
 
+class Tracker(UdpServer):
+    def __init__(self, conf) -> None:
+        super().__init__(conf)
+        self._init_logger(conf)
+
+    def _init_logger(self, conf):
+        logging.config.fileConfig(conf['SETTING']['LoggerConfig'])
+        self.peer_logger = logging.getLogger('PEER')
+        self.file_logger = logging.getLogger('FILE')
+
+    @threaded
+    def start_server(self):
+        """Starts server in a new thread
+
+        This will cause a non-blocking execution of the server. This is could be
+        beneficial when we add console for the tracker."""
+        self.start()
+
+
 def load_config_file():
     parser = configparser.ConfigParser()
     read = parser.read(SERVER_CONFIG)
@@ -103,5 +124,4 @@ def load_config():
 
 if __name__ == "__main__":
     conf = load_config()
-    server = UdpServer(conf)
-    server.start()
+    tracker = Tracker(conf)
