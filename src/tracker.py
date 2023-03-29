@@ -5,6 +5,11 @@ import signal
 import threading
 import logging
 import logging.config
+import json
+import time
+
+from enum import IntEnum
+from dataclasses import dataclass
 
 SERVER_CONFIG = 'conf/server.conf'
 
@@ -74,10 +79,57 @@ class UdpServer:
         print('Shutting down UDP server...')
 
 
+@dataclass
+class File:
+    name: str  # name of the file
+    size: int  # size of the file
+    uploader: tuple  # tuple of (ip, port)
+    online_peers = []  # online peers of the file
+    lock = threading.Lock()
+
+
+@dataclass
+class Peer:
+    client: tuple
+    shared_file: str
+    requested_file: str  # if not None it is pending
+    last_alive: float
+
+
+class ASCII:
+    NUL = '\x00'
+    SOH = '\x01'
+    STX = '\x02'
+    ETX = '\x03'
+    EOT = '\x04'
+    ENQ = '\x05'
+    ACK = '\x06'
+    BEL = '\x07'
+    NAK = '\x15'
+    SYN = '\x16'
+    FS = '\x1C'
+
+
 class Tracker(UdpServer):
+    """Tracker
+
+
+    Tracker server keeps track of the peer downloads, wether it's done or not
+    and torrent db which for each filename keep track of alive peers.
+    """
+
     def __init__(self, conf) -> None:
+        """Initialize"""
         super().__init__(conf)
         self._init_logger(conf)
+        self.ttl = float(logging.config.fileConfig(conf['SETTING']['PTTL']))
+        self.db_lock = threading.Lock()
+        self.peer_lock = threading.Lock()
+        self.id_lock = threading.Lock()
+        self.torrent_db = {}
+        self.torrent_peers = {}
+        self.max_id = 1
+        self.clients = {}
 
     def _init_logger(self, conf):
         logging.config.fileConfig(conf['SETTING']['LoggerConfig'])
@@ -85,12 +137,138 @@ class Tracker(UdpServer):
         self.file_logger = logging.getLogger('FILE')
 
     @threaded
+    def keep_clean(self):
+        """Keeps torrent db clean
+
+        peers may become offline. This function will checks periodically if peer
+        is alive or not. If the last ALIVE signal of peer is from 1 min ago then
+        peer will be off the list and file list will be updated too.
+
+        NOTE: this function must be called only once. this is done inside the
+        `start_server` method and should not be called again."""
+        pass
+
+    @threaded
     def start_server(self):
         """Starts server in a new thread
 
         This will cause a non-blocking execution of the server. This is could be
         beneficial when we add console for the tracker."""
+        self.keep_clean()
         self.start()
+
+    def alive_peer(self, client):
+        peer = self.torrent_peers.get(client, None)
+        # TODO: LOG
+        if not peer:
+            self.send(ASCII.NAK, client)
+        else:
+            peer.last_alive = time.time()
+            self.send(ASCII.ACK, client)
+
+    def not_interested(self, client):
+        pass
+
+    def downloaded(self, client, checksum):
+        pass
+
+    def send(self, msg: str, client):
+        self.sock.sendto(msg.encode(), client)
+
+    def query(self, client, file):
+        # TODO: log
+        file = self.torrent_db.get(file, None)
+        if file:
+            with file.lock:
+                self.send(json.dumps(file.online_peers), client)
+        else:
+            self.send("[]", client)
+
+    def add_file(self, file, size, client):
+        """Adds a file to database
+
+        File will be added to the database with empty list of online peers.
+
+        Args:
+            file (str): name of the file
+            size (int): in bytes
+            client (tuple): ip port tuple
+
+        Returns:
+            File: created file
+        """
+        file = File(file, size, client)
+        # TODO: log
+        with self.db_lock:
+            self.torrent_db[file] = file
+        return file
+
+    def add_peer(self, client, file: File):
+        """Adds a peer to the system serving file
+
+        adds a peer to the db and to file's online peers
+
+        Args:
+            client (tuple): (ip, port) tuple of the client
+            file (File): file that peer serves
+
+        Returns:
+            Peer: peer object created
+        """
+        peer = Peer(client, file.name, None, time.time())
+        # TODO: log
+        with self.peer_lock:
+            self.torrent_peers[client] = peer
+        with file.lock:
+            file.online_peers.append(client)
+        return peer
+
+    def join_peer(self, client, file, size):
+        """Joins a client as a peer server of a file
+
+        If file does not exist, It will create the file as a new file
+        Args:
+            client (tuple): (ip, port) tuple of the client
+            file (str): name of the file
+            size (int): size of the file in bytes
+        """
+        db_file = self.torrent_db.get(file, None)
+        if not db_file:
+            db_file = self.add_file(file, size, client)
+        peer = self.torrent_peers.get(client, None)
+        if peer and peer.requested_file:
+            self.not_interested(client)
+        self.add_peer(client, file)
+
+    def remove_peer_from_file(self, file: File, client):
+        with file.lock:
+            pass
+
+    def disconnect(self, client):
+        with self.peer_lock:
+            pass
+
+    def protocol_error(self, client):
+        pass
+
+    def handle(self, msg: bytes, client):
+        """Handles requests according to the protocol's RFC (!)"""
+        msg = msg.decode()
+        if len(msg) == 0:
+            self.alive_peer(client)
+        elif msg.startswith(ASCII.ACK):
+            filename, size = msg[1:].strip().split(':')
+            self.join_peer(client, filename, int(size))
+        elif msg.startswith(ASCII.SYN):
+            self.downloaded(client)
+        elif msg.startswith(ASCII.NAK):
+            self.not_interested(client)
+        elif msg.startswith(ASCII.ENQ):
+            self.query(client, msg[1:])
+        elif msg.startswith(ASCII.NUL):
+            self.disconnect(client)
+        else:
+            self.protocol_error(client)
 
 
 def load_config_file():
