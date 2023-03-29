@@ -137,24 +137,11 @@ class Tracker(UdpServer):
         self.file_logger = logging.getLogger('FILE')
 
     @threaded
-    def keep_clean(self):
-        """Keeps torrent db clean
-
-        peers may become offline. This function will checks periodically if peer
-        is alive or not. If the last ALIVE signal of peer is from 1 min ago then
-        peer will be off the list and file list will be updated too.
-
-        NOTE: this function must be called only once. this is done inside the
-        `start_server` method and should not be called again."""
-        pass
-
-    @threaded
     def start_server(self):
         """Starts server in a new thread
 
         This will cause a non-blocking execution of the server. This is could be
         beneficial when we add console for the tracker."""
-        self.keep_clean()
         self.start()
 
     def alive_peer(self, client):
@@ -166,23 +153,47 @@ class Tracker(UdpServer):
             peer.last_alive = time.time()
             self.send(ASCII.ACK, client)
 
-    def not_interested(self, client):
-        pass
+    def log_status_remove(self, client, status: str):
+        peer = self.torrent_peers.get(client, None)
+        # TODO: LOG
+        self.remove_peer(client)
 
-    def downloaded(self, client, checksum):
-        pass
+    def not_interested(self, client):
+        self.log_status_remove(client, 'NOT INTERESTED')
+
+    def downloaded(self, client):
+        self.log_status_remove(client, 'DOWNLOADED')
 
     def send(self, msg: str, client):
         self.sock.sendto(msg.encode(), client)
+
+    def remove_dead_peer(self, file: File):
+        now = time.time()
+        alive = list(filter(lambda x: now - x.last_alive <
+                     self.ttl * 2, file.online_peers))
+        with file.lock:
+            file.online_peers.clear()
+            file.online_peers.extend(alive)
 
     def query(self, client, file):
         # TODO: log
         file = self.torrent_db.get(file, None)
         if file:
+            self.add_to_pending(client, file)
+            self.remove_dead_peer(file)
             with file.lock:
                 self.send(json.dumps(file.online_peers), client)
         else:
-            self.send("[]", client)
+            self.send(ASCII.NUL, client)
+
+    def add_to_pending(self, client, file: File):
+        peer = self.torrent_peers.get(client, None)
+        if peer:
+            self.clean_prev_activity(peer)
+            peer.requested_file = file.name
+        else:
+            with self.peer_lock:
+                self.torrent_peers[client] = Peer(client, None, file.name)
 
     def add_file(self, file, size, client):
         """Adds a file to database
@@ -223,6 +234,21 @@ class Tracker(UdpServer):
             file.online_peers.append(client)
         return peer
 
+    def discard_requested_file(self, peer: Peer):
+        # TODO: Log
+        pass
+
+    def remove_peer(self, client):
+        with self.peer_lock:
+            return self.torrent_peers.pop(client, None)
+
+    def clean_prev_activity(self, peer: Peer):
+        if peer.requested_file:
+            self.discard_requested_file(peer)
+        elif peer.shared_file:
+            file = self.torrent_db.get(peer.shared_file)
+            self.remove_peer_from_file(file, peer.client)
+
     def join_peer(self, client, file, size):
         """Joins a client as a peer server of a file
 
@@ -236,17 +262,30 @@ class Tracker(UdpServer):
         if not db_file:
             db_file = self.add_file(file, size, client)
         peer = self.torrent_peers.get(client, None)
-        if peer and peer.requested_file:
-            self.not_interested(client)
-        self.add_peer(client, file)
+        if peer:
+            self.clean_prev_activity(peer)
+        self.add_peer(client, db_file)
+        self.send(ASCII.ACK, client)
 
     def remove_peer_from_file(self, file: File, client):
         with file.lock:
-            pass
+            try:
+                file.online_peers.remove(client)
+            except:
+                pass
 
     def disconnect(self, client):
-        with self.peer_lock:
-            pass
+        """Removes client from peers and from file's online peers
+
+        Args:
+            client (tuple): ip, port
+        """
+        peer = self.remove_peer()
+        if peer:
+            file = self.torrent_db.get(peer.shared_file, None)
+            if file:
+                self.remove_peer_from_file(file, client)
+        # TODO: LOG
 
     def protocol_error(self, client):
         pass
