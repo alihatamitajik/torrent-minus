@@ -7,6 +7,7 @@ import logging
 import logging.config
 import json
 import time
+from util import ip_port_type
 
 from dataclasses import dataclass
 
@@ -145,7 +146,8 @@ def get_parser():
         description="Simplified tracker of torrent network",
         epilog="Spring23 - CE40443 - Assignment 2")
     parser.add_argument('bind', nargs='?', metavar='ip:port',
-                        help='IP and Port binding of the server')
+                        help='IP and Port binding of the server',
+                        type=ip_port_type)
     return parser
 
 
