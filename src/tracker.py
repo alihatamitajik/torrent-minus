@@ -8,7 +8,6 @@ import logging.config
 import json
 import time
 
-from enum import IntEnum
 from dataclasses import dataclass
 
 SERVER_CONFIG = 'conf/server.conf'
@@ -79,23 +78,6 @@ class UdpServer:
         print('Shutting down UDP server...')
 
 
-@dataclass
-class File:
-    name: str  # name of the file
-    size: int  # size of the file
-    uploader: tuple  # tuple of (ip, port)
-    online_peers = []  # online peers of the file
-    lock = threading.Lock()
-
-
-@dataclass
-class Peer:
-    client: tuple
-    shared_file: str
-    requested_file: str  # if not None it is pending
-    last_alive: float
-
-
 class ASCII:
     NUL = '\x00'
     SOH = '\x01'
@@ -144,155 +126,14 @@ class Tracker(UdpServer):
         beneficial when we add console for the tracker."""
         self.start()
 
-    def alive_peer(self, client):
-        peer = self.torrent_peers.get(client, None)
-        # TODO: LOG
-        if not peer:
-            self.send(ASCII.NAK, client)
-        else:
-            peer.last_alive = time.time()
-            self.send(ASCII.ACK, client)
+    def protocol_error(self, client, b_msg: bytes):
+        self.peer_logger.warning(
+            f'[{client}] made unknown request {b_msg[:10]}')
+        self.send(ASCII.NAK, client)
 
-    def log_status_remove(self, client, status: str):
-        peer = self.torrent_peers.get(client, None)
-        # TODO: LOG
-        self.remove_peer(client)
-
-    def not_interested(self, client):
-        self.log_status_remove(client, 'NOT INTERESTED')
-
-    def downloaded(self, client):
-        self.log_status_remove(client, 'DOWNLOADED')
-
-    def send(self, msg: str, client):
-        self.sock.sendto(msg.encode(), client)
-
-    def remove_dead_peer(self, file: File):
-        now = time.time()
-        alive = list(filter(lambda x: now - x.last_alive <
-                     self.ttl * 2, file.online_peers))
-        with file.lock:
-            file.online_peers.clear()
-            file.online_peers.extend(alive)
-
-    def query(self, client, file):
-        # TODO: log
-        file = self.torrent_db.get(file, None)
-        if file:
-            self.add_to_pending(client, file)
-            self.remove_dead_peer(file)
-            with file.lock:
-                self.send(json.dumps(file.online_peers), client)
-        else:
-            self.send(ASCII.NUL, client)
-
-    def add_to_pending(self, client, file: File):
-        peer = self.torrent_peers.get(client, None)
-        if peer:
-            self.clean_prev_activity(peer)
-            peer.requested_file = file.name
-        else:
-            with self.peer_lock:
-                self.torrent_peers[client] = Peer(client, None, file.name)
-
-    def add_file(self, file, size, client):
-        """Adds a file to database
-
-        File will be added to the database with empty list of online peers.
-
-        Args:
-            file (str): name of the file
-            size (int): in bytes
-            client (tuple): ip port tuple
-
-        Returns:
-            File: created file
-        """
-        db_file = File(file, size, client)
-        # TODO: log
-        with self.db_lock:
-            self.torrent_db[file] = db_file
-        return db_file
-
-    def add_peer(self, client, file: File):
-        """Adds a peer to the system serving file
-
-        adds a peer to the db and to file's online peers
-
-        Args:
-            client (tuple): (ip, port) tuple of the client
-            file (File): file that peer serves
-
-        Returns:
-            Peer: peer object created
-        """
-        peer = Peer(client, file.name, None, time.time())
-        # TODO: log
-        with self.peer_lock:
-            self.torrent_peers[client] = peer
-        with file.lock:
-            file.online_peers.append(client)
-        return peer
-
-    def discard_requested_file(self, peer: Peer):
-        # TODO: Log
-        pass
-
-    def remove_peer(self, client):
-        with self.peer_lock:
-            return self.torrent_peers.pop(client, None)
-
-    def clean_prev_activity(self, peer: Peer):
-        if peer.requested_file:
-            self.discard_requested_file(peer)
-        elif peer.shared_file:
-            file = self.torrent_db.get(peer.shared_file)
-            self.remove_peer_from_file(file, peer.client)
-
-    def join_peer(self, client, file, size):
-        """Joins a client as a peer server of a file
-
-        If file does not exist, It will create the file as a new file
-        Args:
-            client (tuple): (ip, port) tuple of the client
-            file (str): name of the file
-            size (int): size of the file in bytes
-        """
-        db_file = self.torrent_db.get(file, None)
-        if not db_file:
-            db_file = self.add_file(file, size, client)
-        peer = self.torrent_peers.get(client, None)
-        if peer:
-            self.clean_prev_activity(peer)
-        self.add_peer(client, db_file)
-        self.send(ASCII.ACK, client)
-
-    def remove_peer_from_file(self, file: File, client):
-        with file.lock:
-            try:
-                file.online_peers.remove(client)
-            except:
-                pass
-
-    def disconnect(self, client):
-        """Removes client from peers and from file's online peers
-
-        Args:
-            client (tuple): ip, port
-        """
-        peer = self.remove_peer()
-        if peer:
-            file = self.torrent_db.get(peer.shared_file, None)
-            if file:
-                self.remove_peer_from_file(file, client)
-        # TODO: LOG
-
-    def protocol_error(self, client):
-        pass
-
-    def handle(self, msg: bytes, client):
+    def handle(self, b_msg: bytes, client):
         """Handles requests according to the protocol's RFC (!)"""
-        msg = msg.decode()
+        msg = b_msg.decode()
         if len(msg) == 0:
             self.alive_peer(client)
         elif msg.startswith(ASCII.ACK):
@@ -307,7 +148,7 @@ class Tracker(UdpServer):
         elif msg.startswith(ASCII.NUL):
             self.disconnect(client)
         else:
-            self.protocol_error(client)
+            self.protocol_error(client, b_msg)
 
 
 def load_config_file():
