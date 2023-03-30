@@ -126,29 +126,9 @@ class Tracker(UdpServer):
         beneficial when we add console for the tracker."""
         self.start()
 
-    def protocol_error(self, client, b_msg: bytes):
-        self.peer_logger.warning(
-            f'[{client}] made unknown request {b_msg[:10]}')
-        self.send(ASCII.NAK, client)
-
     def handle(self, b_msg: bytes, client):
         """Handles requests according to the protocol's RFC (!)"""
         msg = b_msg.decode()
-        if len(msg) == 0:
-            self.alive_peer(client)
-        elif msg.startswith(ASCII.ACK):
-            filename, size = msg[1:].strip().split(':')
-            self.join_peer(client, filename, int(size))
-        elif msg.startswith(ASCII.SYN):
-            self.downloaded(client)
-        elif msg.startswith(ASCII.NAK):
-            self.not_interested(client)
-        elif msg.startswith(ASCII.ENQ):
-            self.query(client, msg[1:])
-        elif msg.startswith(ASCII.NUL):
-            self.disconnect(client)
-        else:
-            self.protocol_error(client, b_msg)
 
 
 def load_config_file():
@@ -164,7 +144,7 @@ def get_parser():
         prog='TorTracker',
         description="Simplified tracker of torrent network",
         epilog="Spring23 - CE40443 - Assignment 2")
-    parser.add_argument('IP:Port', nargs='?',
+    parser.add_argument('bind', nargs='?', metavar='ip:port',
                         help='IP and Port binding of the server')
     return parser
 
@@ -173,8 +153,8 @@ def load_config():
     config = load_config_file()
     parser = get_parser()
     args = parser.parse_args()
-    if getattr(args, 'IP:Port'):
-        ip, port = getattr(args, 'IP:Port').split(':')
+    if args.bind:
+        ip, port = args.bind.split(':')
         config['NET']['Ip'] = ip
         config['NET']['Port'] = port
     return config
