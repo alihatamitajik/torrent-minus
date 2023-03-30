@@ -7,9 +7,9 @@ import logging
 import logging.config
 import json
 import time
-from util import ip_port_type, ASCII
 
-from dataclasses import dataclass
+from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
+from util.encrypt import generate_key
 
 SERVER_CONFIG = 'conf/server.conf'
 
@@ -79,6 +79,16 @@ class UdpServer:
         print('Shutting down UDP server...')
 
 
+class Peer:
+    def __init__(self, id, client, key) -> None:
+        self.lock = threading.Lock()
+        self.files = []
+        self.alive = True
+        self.client = client
+        self.key = key
+        self.id = id
+
+
 class Tracker(UdpServer):
     """Tracker
 
@@ -92,18 +102,16 @@ class Tracker(UdpServer):
         super().__init__(conf)
         self._init_logger(conf)
         self.ttl = float(conf['SETTING']['PTTL'])
-        self.db_lock = threading.Lock()
+        self.torrent = TorrentProtocol()
         self.peer_lock = threading.Lock()
-        self.id_lock = threading.Lock()
-        self.torrent_db = {}
-        self.torrent_peers = {}
-        self.max_id = 1
-        self.clients = {}
+        self.peer_db = {}
+        self.last_id = 0
 
     def _init_logger(self, conf):
         logging.config.fileConfig(conf['SETTING']['LoggerConfig'])
         self.peer_logger = logging.getLogger('PEER')
         self.file_logger = logging.getLogger('FILE')
+        self.error_logger = logging.getLogger('INTERNAL')
 
     @threaded
     def start_server(self):
@@ -115,7 +123,33 @@ class Tracker(UdpServer):
 
     def handle(self, b_msg: bytes, client):
         """Handles requests according to the protocol's RFC (!)"""
-        msg = b_msg.decode()
+        try:
+            r_type, fields = self.torrent.read_req(b_msg)
+            getattr(self, f"_handle_{r_type}")(client, **fields)
+        except:
+            self.error_logger.exception(f'[{client}] requested [{b_msg}]')
+
+    def _handle_register(self, client, **kwargs):
+        """Handle registration of the client
+
+        Protocol: When a peer requests to be registered, an id and a key would
+        be responded to him. the respond in unencrypted and with following keys:
+            - status : "ok" if successful or "error" in case of an error
+            - id     : a 4B integer representing the id of the peer. peer must 
+                       keep this id for later requests.
+            - secret  : 32B key to encrypt and decrypt massages
+        """
+        self.last_id += 1
+        id = self.last_id
+        key = generate_key()
+        with self.peer_lock:
+            self.peer_db[id] = Peer(id, client, key)
+        self.peer_logger.info(f'{client} registered as {id}')
+        self.sock.sendto(self.torrent.respond(
+            status="ok",
+            id=id,
+            secret=key.decode('ISO-8859-1')
+        ), client)
 
 
 def load_config_file():

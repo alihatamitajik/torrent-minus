@@ -1,6 +1,7 @@
 import argparse
 import ipaddress
 
+
 def ip_port_type(val: str):
     vals = val.split(":")
     if len(vals) != 2:
@@ -20,7 +21,7 @@ def ip_port_type(val: str):
         if ip.version != 4:
             raise argparse.ArgumentTypeError(
                 f'invalid ip ({vals[0]}). use valid IPv4 address (e.g. 127.0.0.1).')
-        return (vals[0], vals[1])
+        return (vals[0], port)
     except:
         raise argparse.ArgumentTypeError(
             f'invalid ip ({vals[0]}). use valid IPv4 address (e.g. 127.0.0.1).')
