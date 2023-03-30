@@ -24,3 +24,17 @@ def ip_port_type(val: str):
     except:
         raise argparse.ArgumentTypeError(
             f'invalid ip ({vals[0]}). use valid IPv4 address (e.g. 127.0.0.1).')
+
+
+class ASCII:
+    NUL = '\x00'
+    SOH = '\x01'
+    STX = '\x02'
+    ETX = '\x03'
+    EOT = '\x04'
+    ENQ = '\x05'
+    ACK = '\x06'
+    BEL = '\x07'
+    NAK = '\x15'
+    SYN = '\x16'
+    FS = '\x1C'

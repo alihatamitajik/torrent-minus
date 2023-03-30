@@ -7,7 +7,7 @@ import logging
 import logging.config
 import json
 import time
-from util import ip_port_type
+from util import ip_port_type, ASCII
 
 from dataclasses import dataclass
 
@@ -77,20 +77,6 @@ class UdpServer:
     def on_exit(self):
         """Executed before ending program after keyboard interrupt"""
         print('Shutting down UDP server...')
-
-
-class ASCII:
-    NUL = '\x00'
-    SOH = '\x01'
-    STX = '\x02'
-    ETX = '\x03'
-    EOT = '\x04'
-    ENQ = '\x05'
-    ACK = '\x06'
-    BEL = '\x07'
-    NAK = '\x15'
-    SYN = '\x16'
-    FS = '\x1C'
 
 
 class Tracker(UdpServer):

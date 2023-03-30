@@ -1,1 +1,1 @@
-from .common import ip_port_type
+from .common import ip_port_type, ASCII
