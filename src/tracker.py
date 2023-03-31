@@ -81,7 +81,7 @@ class Peer:
     def __init__(self, id, client, key) -> None:
         self.lock = threading.Lock()
         self.files = []
-        self.alive = True
+        self.last_alive = time.time()
         self.client = client
         self.key = key
         self.id = id
@@ -241,6 +241,17 @@ class Tracker(UdpServer):
             else:
                 file = self.add_file(id, client, filename, checksum, size)
                 self.add_provider(id, client, file)
+
+    def _handle_alive(self, client, **kwargs):
+        """update living status of a peer
+
+        Protocol: last alive and client of the peer is updated with each alive
+        request peer make."""
+        id = kwargs['id']
+        peer = self.peer_db.get(id, EMPTY_PEER)
+        peer.last_alive = time.time()
+        peer.client = client
+        self.logger.info(f'ID({id}) is alive')
 
 
 def load_config_file():

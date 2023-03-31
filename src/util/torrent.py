@@ -7,6 +7,7 @@ import json
 class TorrentRequest(IntEnum):
     REGISTER = auto()
     SHARE = auto()
+    ALIVE = auto()
 
     def __str__(self) -> str:
         return self.name.lower()

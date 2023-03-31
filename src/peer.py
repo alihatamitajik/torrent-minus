@@ -3,9 +3,11 @@ import configparser
 import logging
 import socket
 import hashlib
+import time
 
 from pathlib import Path
 from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
+from util.decor import threaded
 
 PEER_CONFIG = 'conf/peer.conf'
 
@@ -15,6 +17,8 @@ class Peer:
         self.tracker = args.tracker
         self.listen = args.listen
         self.dir = args.basedir
+        self.ttl = float(config['SETTING']['PTTL'])
+        self.buffer_size = int(config['SETTING']['BufferSize'])
         if 'name' in args:
             logging.basicConfig(filename=f'log/{args.name}.log',
                                 filemode='w',
@@ -26,7 +30,6 @@ class Peer:
         self.id = None
         self.key = None
         self.torrent = TorrentProtocol()
-        self.buffer_size = int(config['SETTING']['BufferSize'])
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.bind(self.listen)
         self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -44,6 +47,36 @@ class Peer:
         self.id = resp['id']
         self.key = resp['secret'].encode('ISO-8859-1')
         self.logger.info(f'Peer registered as id {self.id}')
+
+    @threaded
+    def keep_alive(self):
+        """Sends alive requests in ttl intervals
+
+        Protocol: peers must sent a alive requests to the server so last alive
+        parameter of each peer gets updated. This parameter is useful when 
+        querying providers. If a provider is inactive for more than 2 ttl then
+        it is assumed that it is become offline. also client information is
+        updated with update port and ip request.
+        """
+        while True:
+            time.sleep(self.ttl)
+            self.udp.sendto(self.torrent.req(
+                TR.ALIVE,
+                id=self.id,
+                key=self.key
+            ), self.tracker)
+
+    @threaded
+    def handle_peer(self, peer_sock: socket.socket, addr):
+        """TODO: protocol"""
+
+    @threaded
+    def start_service(self):
+        self.keep_alive()
+        self.tcp.listen(10)
+        while True:
+            peer_sock, addr = self.tcp.accept()
+            self.handle_peer(peer_sock, addr)
 
     def share(self, filename: str):
         """shares a file to the tracker
@@ -138,6 +171,7 @@ def main():
     peer = Peer(config, args)
     peer.register()
     peer.share(args.file)
+    peer.start_service()
 
 
 if __name__ == "__main__":
