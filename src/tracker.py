@@ -8,6 +8,7 @@ import logging.config
 import json
 import time
 
+from functools import wraps
 from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
 from util.encrypt import generate_key
 
@@ -79,6 +80,14 @@ class UdpServer:
         print('Shutting down UDP server...')
 
 
+class TorFile:
+    def __init__(self, name, size, checksum) -> None:
+        self.name = name
+        self.size = size
+        self.checksum = checksum
+        self.key = generate_key()
+
+
 class Peer:
     def __init__(self, id, client, key) -> None:
         self.lock = threading.Lock()
@@ -87,6 +96,27 @@ class Peer:
         self.client = client
         self.key = key
         self.id = id
+
+
+EMPTY_PEER = Peer(None, None, None)
+
+
+def check_missing(type: TR):
+    def _decorator(fn):
+        @wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            """If there are missing must, it will send an error massage to client"""
+            client = args[0]
+            missing = self.torrent.missing_fields(type, kwargs)
+            if missing:
+                id = kwargs['id']
+                self.peer_logger.warning(
+                    f"({id}) requested {type} without fields {missing}")
+                self.send_error(id, client, f"missing {missing}")
+            else:
+                fn(self, *args, **kwargs)
+        return wrapper
+    return _decorator
 
 
 class Tracker(UdpServer):
@@ -106,11 +136,14 @@ class Tracker(UdpServer):
         self.peer_lock = threading.Lock()
         self.peer_db = {}
         self.last_id = 0
+        self.file_lock = threading.Lock()
+        self.file_db = {}
+        self.provider_lock = threading.Lock()
+        self.providers = set()  # set of tuple(filename, id)s of providers
 
     def _init_logger(self, conf):
         logging.config.fileConfig(conf['SETTING']['LoggerConfig'])
-        self.peer_logger = logging.getLogger('PEER')
-        self.file_logger = logging.getLogger('FILE')
+        self.logger = logging.getLogger('LOGGER')
         self.error_logger = logging.getLogger('INTERNAL')
 
     @threaded
@@ -124,10 +157,14 @@ class Tracker(UdpServer):
     def handle(self, b_msg: bytes, client):
         """Handles requests according to the protocol's RFC (!)"""
         try:
-            r_type, fields = self.torrent.read_req(b_msg)
+            r_type, fields = self.torrent.read_req(b_msg, self.key_extractor)
             getattr(self, f"_handle_{r_type}")(client, **fields)
         except:
             self.error_logger.exception(f'[{client}] requested [{b_msg}]')
+
+    @property
+    def key_extractor(self):
+        return lambda id: self.peer_db.get(id, EMPTY_PEER).key
 
     def _handle_register(self, client, **kwargs):
         """Handle registration of the client
@@ -144,12 +181,77 @@ class Tracker(UdpServer):
         key = generate_key()
         with self.peer_lock:
             self.peer_db[id] = Peer(id, client, key)
-        self.peer_logger.info(f'{client} registered as {id}')
+        self.logger.info(f'{client} registered as ID({id})')
+        self.send_respond(id, client, False,
+                          status="ok",
+                          id=id,
+                          secret=key.decode('ISO-8859-1'))
+
+    def send_respond(self, _id, client, encrypted=True, **kwargs):
+        """send response to the client"""
         self.sock.sendto(self.torrent.respond(
-            status="ok",
-            id=id,
-            secret=key.decode('ISO-8859-1')
-        ), client)
+            encrypted,
+            self.key_extractor(_id),
+            **kwargs), client)
+
+    def send_error(self, id, client, msg):
+        """send error to the client"""
+        self.send_respond(id, client, status="error", msg=msg)
+
+    def add_file(self, id, client, name, checksum, size):
+        """Adds a file to the DB"""
+        file = TorFile(name, int(size), checksum)
+        with self.file_lock:
+            self.file_db[name] = file
+            self.logger.info(f'[{name}] added by ID({id})')
+            return file
+
+    def add_provider(self,  id: int, client, file: TorFile, checksum=None):
+        """Adds peer with id to filename providers
+
+        If checksum is not None it will check checksum and if not matches will
+        send an error to the client."""
+        if checksum:
+            file = self.file_db[file.name]
+            if checksum != file.checksum:
+                self.logger.warning(
+                    f'ID({id}) does not added to [{file.name}] due to wrong checksum ({checksum})')
+                self.send_error(id, client, f'checksums does not match')
+                return
+        with self.provider_lock:
+            self.providers.add((file.name, id))
+            self.send_respond(id, client,
+                              status="ok",
+                              secret=file.key.decode('ISO-8859-1'))
+            self.logger.info(f'ID({id}) provides [{file.name}]')
+
+    @check_missing(type=TR.SHARE)
+    def _handle_share(self, client, **kwargs):
+        """handle share request
+
+        Protocol:
+            1. If the file is shared for the first time the checksum and size is
+               registered in the system.
+            2. If file is shared before checksums must match to add the id to
+               files provider.
+
+        Args:
+            client (tuple): ip, port of the sender
+        """
+        id = kwargs['id']
+        filename = kwargs['filename']
+        checksum = kwargs['checksum']
+        file = self.file_db.get(filename, None)
+        if file:
+            self.add_provider(id, client, file, checksum)
+        else:
+            size = kwargs.get('size', None)
+            if size == None:
+                self.send_error(id, client,
+                                msg="must provide size for new file.")
+            else:
+                file = self.add_file(id, client, filename, checksum, size)
+                self.add_provider(id, client, file)
 
 
 def load_config_file():
