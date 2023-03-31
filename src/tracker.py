@@ -11,20 +11,9 @@ import time
 from functools import wraps
 from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
 from util.encrypt import generate_key
+from util.decor import threaded
 
 SERVER_CONFIG = 'conf/server.conf'
-
-
-def threaded(fn):
-    """Threaded decorator
-
-    This decorator will run a function or method in a new thread
-    """
-    def run(*args, **kwargs):
-        t = threading.Thread(target=fn, args=args, kwargs=kwargs)
-        t.start()
-        return t
-    return run
 
 
 class UdpServer:
