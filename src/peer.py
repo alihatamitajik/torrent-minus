@@ -60,11 +60,7 @@ class Peer:
         """
         while True:
             time.sleep(self.ttl)
-            self.udp.sendto(self.torrent.req(
-                TR.ALIVE,
-                id=self.id,
-                key=self.key
-            ), self.tracker)
+            self.send_to_tracker(TR.ALIVE)
 
     @threaded
     def handle_peer(self, peer_sock: socket.socket, addr):
@@ -77,6 +73,23 @@ class Peer:
         while True:
             peer_sock, addr = self.tcp.accept()
             self.handle_peer(peer_sock, addr)
+
+    def get_response(self):
+        """receive response from tracker
+
+        logs JSON responses in debug mode"""
+        resp = self.torrent.read_response(self.udp.recv(self.buffer_size),
+                                          key=self.key)
+        self.logger.debug(resp)
+        return resp
+
+    def send_to_tracker(self, type: TR, **kwargs):
+        """send kwargs to tracker
+
+        logs requests bytes in debug mode"""
+        req = self.torrent.req(type, id=self.id, key=self.key, **kwargs)
+        self.logger.debug(req)
+        self.udp.sendto(req, self.tracker)
 
     def share(self, filename: str):
         """shares a file to the tracker
@@ -114,21 +127,52 @@ class Peer:
             while chunk := file.read(8192):
                 checksum.update(chunk)
             size = file.tell()
-            self.udp.sendto(self.torrent.req(
-                TR.SHARE,
-                id=self.id,
-                key=self.key,
-                filename=filename,
-                size=size,
-                checksum=checksum.hexdigest()
-            ), self.tracker)
-            resp = self.torrent.read_response(self.udp.recv(self.buffer_size),
-                                              key=self.key)
+            self.send_to_tracker(TR.SHARE, filename=filename, size=size,
+                                 checksum=checksum.hexdigest())
+            resp = self.get_response()
             if resp['status'] == 'ok':
                 self.file_keys[filename] = resp['secret'].encode('ISO-8859-1')
                 self.logger.info(f'[{filename}] shared')
             else:
                 raise PermissionError(resp['msg'])
+
+    def query(self, filename) -> dict:
+        """Query providers of filename
+
+        Protocol: peer use query request to find all peers that have the file.
+        the first response only contains status of the query with following
+        attributes:
+            - status    : "ok" or "error" (str)
+            - msg       : if "error", error massage (str)
+            - parts     : if "ok", # of 1KB encrypted responses that have to
+                          be received after first response (int)
+            - secret    : if "ok", key to read file bytes from other peer. (str)
+            - size      : if "ok", size of the file.
+        parts can be zero meaning that there is no online provider. if part is
+        positive #parts will be sent to the peer with following attribute:
+            - provider  : list of the providers. there will be maximum of 30
+                          providers in the list (Technical reason: each provider
+                          will be sent as '(ip,port)' and ip is maximum 19 bytes
+                          long and port is 5 bytes long when in string. To
+                          ensure that we does not exceed the limit of 1KB 30 of
+                          this struct is sent at maximum).
+        """
+        self.send_to_tracker(TR.QUERY, filename=filename)
+        query = self.get_response()
+        if query['status'] == 'ok':
+            query['provider'] = []
+            for _ in range(query['parts']):
+                resp = self.get_response()
+                query['provider'].extend(resp['provider'])
+            self.logger.info(f'query for [{filename}] received.')
+            return query
+        else:
+            raise LookupError(query['msg'])
+
+    def get(self, filename):
+        """Query and download filename from peers"""
+        query = self.query(filename)
+        print(query)
 
 
 def parse_args():
@@ -170,8 +214,13 @@ def main():
     config = load_conf()
     peer = Peer(config, args)
     peer.register()
-    peer.share(args.file)
-    peer.start_service()
+    if args.mode == 'get':
+        peer.get(args.file)
+        # peer.start_service()
+    else:
+        peer.share(args.file)
+        peer.start_service()
+    # start the console
 
 
 if __name__ == "__main__":

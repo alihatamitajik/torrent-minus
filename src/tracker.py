@@ -5,11 +5,12 @@ import signal
 import threading
 import logging
 import logging.config
-import json
+import math
 import time
 
 from functools import wraps
 from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
+from util import divide_part
 from util.encrypt import generate_key
 from util.decor import threaded
 
@@ -252,6 +253,46 @@ class Tracker(UdpServer):
         peer.last_alive = time.time()
         peer.client = client
         self.logger.info(f'ID({id}) is alive')
+
+    def get_providers(self, name):
+        """list of client information of the providers of filename"""
+        now = time.time()
+        file_prov = []
+        providers = list(self.providers.copy())
+        for _name, id in providers:
+            if _name == name:
+                peer = self.peer_db[id]
+                if now - peer.last_alive < 2 * self.ttl:
+                    file_prov.append(peer.client)
+        return file_prov
+
+    @check_missing(TR.QUERY)
+    def _handle_query(self, client, **kwargs):
+        """handle query request
+
+        Protocol: if filename exists tracker sends information about the file
+        to the peer first including:
+            - size
+            - secret
+            - parts
+        and then it will send providers in 30-provider chunks.
+        """
+        id = kwargs['id']
+        filename = kwargs['filename']
+        file = self.file_db.get(kwargs['filename'], None)
+        if not file:
+            self.send_error(id, client, f'file [{file}] does not exists')
+            self.logger.warning(
+                f'ID({id}) requested query for non-existing [{filename}]')
+        else:
+            providers = list(divide_part(self.get_providers(file.name), 30))
+            self.send_respond(id, client, status="ok", size=file.size,
+                              secret=file.key.decode('ISO-8859-1'),
+                              parts=len(providers))
+            for provider in providers:
+                self.send_respond(id, client, status="ok", provider=provider)
+            self.logger.info(
+                f'{len(providers)} providers sent to ID({id}) for Query[{filename}]')
 
 
 def load_config_file():

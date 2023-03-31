@@ -39,3 +39,8 @@ class ASCII:
     NAK = '\x15'
     SYN = '\x16'
     FS = '\x1C'
+
+
+def divide_part(arr, n):
+    for i in range(0, len(arr), n):
+        yield arr[i:i + n]

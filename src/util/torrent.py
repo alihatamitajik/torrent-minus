@@ -8,6 +8,7 @@ class TorrentRequest(IntEnum):
     REGISTER = auto()
     SHARE = auto()
     ALIVE = auto()
+    QUERY = auto()
 
     def __str__(self) -> str:
         return self.name.lower()
@@ -37,7 +38,9 @@ def encrypted_peer(fn):
 class TorrentProtocol:
     FIELDS = {
         TorrentRequest.SHARE: {'must': ['filename', 'checksum'],
-                               'may':  ['size']}
+                               'may':  ['size']},
+        TorrentRequest.ALIVE: {'must': [], 'may': []},
+        TorrentRequest.QUERY: {'must': ['filename'], 'may': []}
     }
 
     def missing_fields(self, r_type: TorrentRequest, attrs: dict, must_may=False):
