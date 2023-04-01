@@ -318,6 +318,31 @@ class Tracker(UdpServer):
             self.logger.exception(
                 f"error while tried to remove ({filename}, {id}) pair")
 
+    @check_missing(TR.DOWNLOADED)
+    def _handle_downloaded(self, client, **kwargs):
+        """add a client to the DB if it has correct checksum"""
+        id = kwargs['id']
+        filename = kwargs['filename']
+        checksum = kwargs['checksum']
+        file = self.file_db.get(filename, None)
+        if file:
+            self.add_provider(id, client, file, checksum)
+            self.logger.info(f"ID({id}) downloaded [{filename}] successfully")
+        else:
+            self.send_error(id, client, msg="bad file.")
+            self.logger.warning(
+                f'ID({id}) downloaded non existing [{filename}]')
+
+    @check_missing(TR.FAILED)
+    def _handle_failed(self, client, **kwargs):
+        """Log failed incident"""
+        id = kwargs['id']
+        filename = kwargs['filename']
+        provider = tuple(kwargs['provider'])
+        self.logger.warning(
+            f'ID({id}) failed to download [{filename}] from {provider}')
+        self.send_respond(id, client, status="ok")
+
 
 def load_config_file():
     parser = configparser.ConfigParser()

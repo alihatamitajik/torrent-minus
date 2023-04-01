@@ -12,6 +12,8 @@ class TorrentRequest(IntEnum):
     QUERY = auto()
     DOWNLOAD = auto()
     REMOVE = auto()
+    DOWNLOADED = auto()
+    FAILED = auto()
 
     def __str__(self) -> str:
         return self.name.lower()
@@ -44,7 +46,11 @@ class TorrentProtocol:
                                'may':  ['size']},
         TorrentRequest.ALIVE: {'must': [], 'may': []},
         TorrentRequest.QUERY: {'must': ['filename'], 'may': []},
-        TorrentRequest.REMOVE: {'must': ['filename'], 'may': []}
+        TorrentRequest.REMOVE: {'must': ['filename'], 'may': []},
+        TorrentRequest.DOWNLOADED: {'must': ['filename', 'checksum'],
+                                    'may':  ['']},
+        TorrentRequest.FAILED: {'must': ['filename', 'provider'],
+                                'may':  ['']},
     }
 
     def missing_fields(self, r_type: TorrentRequest, attrs: dict, must_may=False):

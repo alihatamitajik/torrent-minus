@@ -6,6 +6,7 @@ import hashlib
 import time
 import math
 import random
+from rich.progress import track
 
 from pathlib import Path
 from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
@@ -245,24 +246,56 @@ class Peer:
         """download from peer
 
         returns true if download was successful else False"""
-        self.tcp.connect(provider)
-        self.tcp.send(self.torrent.respond(filename=filename))
-        resp = self.torrent.read_response(self.tcp.recv(self.buffer_size))
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(provider)
+        s.send(self.torrent.respond(filename=filename))
+        resp = self.torrent.read_response(s.recv(self.buffer_size))
         if resp['status'] == 'ok':
             chunk = resp['chunk']
             buffer_size = chunk + 8
-            self.tcp.send(self.torrent.respond(status="ok"))
+            s.send(self.torrent.respond(status="ok"))
             file_dir = self.dir / filename
+            num_chunks = int(math.ceil(size/chunk))
             with open(file_dir, 'wb') as file:
-                for _ in range(int(math.ceil(size/chunk))):
-                    file.write(decrypt(self.tcp.recv(buffer_size), key))
-                    self.tcp.send(self.torrent.respond(status="ok"))
+                for _ in track(range(num_chunks), description="Downloading..."):
+                    file.write(decrypt(s.recv(buffer_size), key))
+                    s.send(self.torrent.respond(status="ok"))
             self.logger.info(f'[{filename}] received from {provider}')
+            s.close()
             return True
         else:
             self.logger.error(
                 f'[{filename}] file does not exist in {provider}')
+            s.close()
             return False
+
+    def make_downloaded_req(self, filename):
+        """Make downloaded request to the server
+
+        Protocol: if a download was successful peer should make a downloaded
+        request to tracker so tracker adds the peer to the DB."""
+        dir_filename = self.dir / filename
+        with open(dir_filename, 'rb') as file:
+            checksum = hashlib.md5()
+            while chunk := file.read(8192):
+                checksum.update(chunk)
+            self.send_to_tracker(TR.DOWNLOADED,
+                                 filename=filename,
+                                 checksum=checksum.hexdigest())
+            resp = self.get_response()
+            if resp['status'] == "error":
+                raise AssertionError(resp['msg'])
+
+    def make_failed_req(self, filename, provider):
+        """Make failed download request
+
+        Protocol: if a download has failed, then peer must report this incident
+        to the tracker for security issues. Handling security is not a part of
+        protocol but this is provided for a secure implementation of the 
+        tracker.
+        """
+        self.send_to_tracker(TR.FAILED, filename=filename, provider=provider)
+        self.get_response()
 
     def get(self, filename):
         """Query and download filename from peers"""
@@ -275,11 +308,15 @@ class Peer:
             # retrial can be done for other providers but not implemented
             provider_index = random.randrange(num_provider)
             provider = query['provider'][provider_index]
+            prov = (provider[0], provider[1])
             if not self.download(filename,
                                  query['size'],
                                  self.file_keys[filename],
-                                 (provider[0], provider[1])):
+                                 prov):
+                self.make_failed_req(filename, prov)
                 raise RuntimeError('Download failed.')
+            else:
+                self.make_downloaded_req(filename)
 
 
 def parse_args():
@@ -324,8 +361,10 @@ def main():
         peer.register()
         if args.mode == 'get':
             peer.get(args.file)
-        peer.share(args.file)
-        peer.start_service()
+            peer.start_service()
+        else:
+            peer.share(args.file)
+            peer.start_service()
         # start the console
     except:
         peer.logger.exception('operation failed')
