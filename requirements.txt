@@ -1,0 +1,2 @@
+pycryptodome==3.17
+rich==13.3.3
