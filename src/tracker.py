@@ -255,6 +255,7 @@ class Tracker(UdpServer):
         peer.last_alive = time.time()
         peer.client = client
         self.logger.info(f'ID({id}) is alive')
+        self.send_respond(id, client, status="ok")
 
     def get_providers(self, name):
         """list of client information of the providers of filename"""

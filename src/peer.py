@@ -76,6 +76,7 @@ class Peer:
         while True:
             time.sleep(self.ttl)
             self.send_to_tracker(TR.ALIVE)
+            self.get_response()
 
     def handle_false_filename(self, filename, peer_sock, addr):
         """Handles if download peer requested a bad filename"""
@@ -407,8 +408,8 @@ def main():
             peer.share(args.file)
             peer.start_service()
         peer.console.start()
-    except:
-        peer.logger.exception('operation failed')
+    except Exception as e:
+        logging.exception('operation failed')
 
 
 if __name__ == "__main__":
