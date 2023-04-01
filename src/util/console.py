@@ -30,5 +30,5 @@ class LogConsole:
             else:
                 with self.console.status('Searching...'):
                     time.sleep(0.5)  # beautifying
-                    for line in self.handle(cmd):
+                    for line in self.handle(cmd.strip()):
                         self.console.print(line)
