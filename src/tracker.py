@@ -281,7 +281,7 @@ class Tracker(UdpServer):
         filename = kwargs['filename']
         file = self.file_db.get(kwargs['filename'], None)
         if not file:
-            self.send_error(id, client, f'file [{file}] does not exists')
+            self.send_error(id, client, f'file [{filename}] does not exists')
             self.logger.warning(
                 f'ID({id}) requested query for non-existing [{filename}]')
         else:
@@ -293,6 +293,30 @@ class Tracker(UdpServer):
                 self.send_respond(id, client, status="ok", provider=provider)
             self.logger.info(
                 f'{len(providers)} providers sent to ID({id}) for Query[{filename}]')
+
+    @check_missing(TR.REMOVE)
+    def _handle_remove(self, client, **kwargs):
+        """Handle removing the entry
+
+        Protocol: if a peer was asked for a file it doesn't have, it should 
+        make a request to the tracker to remove that entry from database. ok
+        status will be responded removal is successful else error will be
+        responded.
+        """
+        id = kwargs['id']
+        filename = kwargs['filename']
+        try:
+            with self.provider_lock:
+                self.providers.remove((filename, id))
+            self.send_respond(id, client, status="ok")
+            self.logger.info(f"({filename}, {id}) pair is removed from DB.")
+        except KeyError:
+            self.send_respond(id, client, status="error")
+            self.logger.warning(f"({filename}, {id}) does not exists.")
+        except:
+            self.send_respond(id, client, status="error", msg="Internal Error")
+            self.logger.exception(
+                f"error while tried to remove ({filename}, {id}) pair")
 
 
 def load_config_file():

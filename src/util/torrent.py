@@ -2,6 +2,7 @@ from enum import IntEnum, auto
 from functools import wraps
 from .encrypt import encrypt, decrypt
 import json
+from io import BufferedReader
 
 
 class TorrentRequest(IntEnum):
@@ -9,6 +10,8 @@ class TorrentRequest(IntEnum):
     SHARE = auto()
     ALIVE = auto()
     QUERY = auto()
+    DOWNLOAD = auto()
+    REMOVE = auto()
 
     def __str__(self) -> str:
         return self.name.lower()
@@ -40,7 +43,8 @@ class TorrentProtocol:
         TorrentRequest.SHARE: {'must': ['filename', 'checksum'],
                                'may':  ['size']},
         TorrentRequest.ALIVE: {'must': [], 'may': []},
-        TorrentRequest.QUERY: {'must': ['filename'], 'may': []}
+        TorrentRequest.QUERY: {'must': ['filename'], 'may': []},
+        TorrentRequest.REMOVE: {'must': ['filename'], 'may': []}
     }
 
     def missing_fields(self, r_type: TorrentRequest, attrs: dict, must_may=False):

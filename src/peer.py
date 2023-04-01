@@ -4,10 +4,13 @@ import logging
 import socket
 import hashlib
 import time
+import math
+import random
 
 from pathlib import Path
 from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
 from util.decor import threaded
+from util.encrypt import encrypt, decrypt
 
 PEER_CONFIG = 'conf/peer.conf'
 
@@ -19,6 +22,7 @@ class Peer:
         self.dir = args.basedir
         self.ttl = float(config['SETTING']['PTTL'])
         self.buffer_size = int(config['SETTING']['BufferSize'])
+        self.chunk_size = int(config['SETTING']['ChunkSize'])
         if 'name' in args:
             logging.basicConfig(filename=f'log/{args.name}.log',
                                 filemode='w',
@@ -62,9 +66,77 @@ class Peer:
             time.sleep(self.ttl)
             self.send_to_tracker(TR.ALIVE)
 
+    def handle_false_filename(self, filename, peer_sock, addr):
+        """Handles if download peer requested a bad filename"""
+        msg = "File Not Found. This incident will be reported to tracker."
+        peer_sock.send(self.torrent.respond(status="error", msg=msg))
+        peer_sock.close()
+        self.logger.warning(
+            f'({addr}) requested [{filename}] but does not exist.')
+        self.send_to_tracker(TR.REMOVE, filename=filename)
+        resp = self.get_response()
+        if resp['status'] == 'ok':
+            self.logger.info(f'false ({filename}) removed from tracker')
+        else:
+            self.logger.critical(
+                f'false [{filename}] requested but tracker can\'t remove it')
+
+    def send_file(self, file_dir: Path, key: bytes, peer_sock: socket.socket):
+        """sends file to the peer in chunks
+
+        Args:
+            file_dir (Path): path of an available file
+            key (bytes): encryption key of the file
+            peer_sock (socket): socket of the download peer
+        """
+        peer_sock.settimeout(100)
+        peer_sock.send(self.torrent.respond(
+            status="ok", chunk=self.chunk_size))
+        resp = self.torrent.read_response(peer_sock.recv(self.buffer_size))
+        if resp['status'] == 'ok':
+            with open(file_dir, 'rb') as file:
+                while chunk := file.read(self.chunk_size - 8):
+                    peer_sock.send(encrypt(chunk, key))
+                    resp = self.torrent.read_response(
+                        peer_sock.recv(self.buffer_size))
+                    if resp['status'] != 'ok':
+                        raise AssertionError('download discarded')
+        else:
+            raise AssertionError('download discarded')
+
     @threaded
     def handle_peer(self, peer_sock: socket.socket, addr):
-        """TODO: protocol"""
+        """Handle peer download
+
+        Protocol: download peer makes a plaintext request to the a provider peer
+        including non-encryption byte zero followed JSON respond with filename. 
+        If provider does not have the file, it will respond with plain text err
+        structure (i.e. status "error" and msg) and sends a remove request to
+        tracker to remove the entry that shows this peer has the file (in case
+        of file deleted or something).
+        On the other hand if the peer has the file first it will send an ok
+        JSON structure in plain text (with non-encrypted byte) and a chunk
+        attribute which shows buffer size for receiving the file (if chunk size
+        is 1016 there would be 1024 byte of data sent because encryption).
+        After this download peer must send a confirmation ok structure so
+        provider starts to send the data else an error structure. Also there is
+        a 100 seconds timeout for sending ok to provider. provider needs an ok
+        massage after each chunk of data. NOTE: download peer has the filesize 
+        from tracker and it should keep count of the bytes received.
+        """
+        resp = self.torrent.read_response(peer_sock.recv(self.buffer_size))
+        filename = resp['filename']
+        self.logger.info(f'{addr} requested for [{filename}]')
+        file_dir = self.dir / filename
+        if file_dir.is_file():
+            try:
+                self.send_file(file_dir, self.file_keys[filename], peer_sock)
+                self.logger.info(f'[{filename}] sent to {addr} successfully.')
+            except:
+                self.logger.error(f'Send [{filename}] to ({addr}) discarded.')
+                peer_sock.close()
+        else:
+            self.handle_false_filename(filename, peer_sock, addr)
 
     @threaded
     def start_service(self):
@@ -169,10 +241,45 @@ class Peer:
         else:
             raise LookupError(query['msg'])
 
+    def download(self, filename, size, key, provider) -> bool:
+        """download from peer
+
+        returns true if download was successful else False"""
+        self.tcp.connect(provider)
+        self.tcp.send(self.torrent.respond(filename=filename))
+        resp = self.torrent.read_response(self.tcp.recv(self.buffer_size))
+        if resp['status'] == 'ok':
+            chunk = resp['chunk']
+            buffer_size = chunk + 8
+            self.tcp.send(self.torrent.respond(status="ok"))
+            file_dir = self.dir / filename
+            with open(file_dir, 'wb') as file:
+                for _ in range(int(math.ceil(size/chunk))):
+                    file.write(decrypt(self.tcp.recv(buffer_size), key))
+                    self.tcp.send(self.torrent.respond(status="ok"))
+            self.logger.info(f'[{filename}] received from {provider}')
+            return True
+        else:
+            self.logger.error(
+                f'[{filename}] file does not exist in {provider}')
+            return False
+
     def get(self, filename):
         """Query and download filename from peers"""
         query = self.query(filename)
-        print(query)
+        self.file_keys[filename] = query['secret'].encode('ISO-8859-1')
+        num_provider = len(query['provider'])
+        if num_provider == 0:
+            raise IndexError('No Provider is online.')
+        else:
+            # retrial can be done for other providers but not implemented
+            provider_index = random.randrange(num_provider)
+            provider = query['provider'][provider_index]
+            if not self.download(filename,
+                                 query['size'],
+                                 self.file_keys[filename],
+                                 (provider[0], provider[1])):
+                raise RuntimeError('Download failed.')
 
 
 def parse_args():
@@ -213,14 +320,15 @@ def main():
     args = parse_args()
     config = load_conf()
     peer = Peer(config, args)
-    peer.register()
-    if args.mode == 'get':
-        peer.get(args.file)
-        # peer.start_service()
-    else:
+    try:
+        peer.register()
+        if args.mode == 'get':
+            peer.get(args.file)
         peer.share(args.file)
         peer.start_service()
-    # start the console
+        # start the console
+    except:
+        peer.logger.exception('operation failed')
 
 
 if __name__ == "__main__":
