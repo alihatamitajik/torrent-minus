@@ -2,7 +2,7 @@ Independent Submission                                          Ali Hatami Tajik
 Request for Comments: 9405                                              Spring23
 Category: Informational                                                  CE40443
 ISSN: 2070-1724                                  Sharif University of Technology
-                                                                    2 April 2023
+                                                                    3 April 2023
                         Simplified Torrent Protocol
 
 Abstract
