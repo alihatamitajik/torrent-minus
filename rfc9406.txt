@@ -1,0 +1,433 @@
+Independent Submission                                          Ali Hatami Tajik
+Request for Comments: 9405                                              Spring23
+Category: Informational                                                  CE40443
+ISSN: 2070-1724                                  Sharif University of Technology
+                                                                    2 April 2023
+                        Simplified Torrent Protocol
+
+Abstract
+
+    This document defines simplified torrent protocol: A fictional protocol to 
+    torture CE40443 students in the new year holydays. This protocol provides 
+    a system to share files between distributed clients.
+
+Status of This Memo
+
+    This document is not an Internet Standards Track specification; it is 
+    published for informational purposes.
+
+    This is a contribution to the RFC Series, independently of any other RFC
+    stream.  The RFC Editor has chosen to publish this document at its
+    discretion and makes no statement about its value for implementation or
+    deployment.  Documents approved for publication by the RFC Editor are not
+    candidates for any level of Internet Standard;
+    see Section 2 of RFC 7841.
+
+Copyright Notice
+
+    Copyright (c) 2023 Sharif University of Technology and the person identified 
+    as the document author.  All rights reserved.
+
+Table of Contents
+
+    1.  Terminology
+    2.  Massages
+      2.1.  Order
+      2.2.  Types
+      2.3.  Encryption 
+      2.4.  Communication
+      2.5.  Usage
+        2.5.1.  Register
+        2.5.2.  Share
+        2.5.3.  Alive
+        2.5.4.  Query
+        2.5.5.  Download
+        2.5.6.  Remove
+        2.5.7.  Downloaded
+        2.5.8.  Failed
+    3.  Security Considerations
+    Author's Addresses
+
+1.  Terminology
+
+    This document uses specific terms to refer to items being depicted by
+    the notation described herein.
+
+    To avoid ambiguity, such terms are defined as follows:
+
+    Tracker: A server which tracks available peers and files in the system and
+        provides secret key for encryption.
+    
+    Peer: Clients, which are also a server, that communicates with tracker and
+        other clients.
+    
+    Provider: Provider of file x is a peer that has the file x in its host
+        system and can send it to other clients.
+
+    TTL: Short form of 'time to live'. This term is used in this protocol as the
+        configuration of the system that should be set between tracker and
+        peers. Recommended value is 30. 
+
+    Alive: A peer is said to be alive if its last heartbeat is less than TTL
+        seconds ago.
+    
+    Dead: A peer that is not alive.
+
+    Address: Address of peer is combination of its IP address (v4 or v6) and its
+        port.
+
+    Request: A massage sent to a tracker or a peer.
+
+    Response: A massage sent to address of which a request had been made. All
+        valid requests will have a response.
+
+    Seeder: A peer that sends file to another peer.
+
+    Downloader: A peer that get a file from seeder.
+
+    File: A computer file which is unique by name.
+
+    Checksum: MD5 checksum of a file.
+
+2.  Massages
+    This protocol is based on requests made by a peer to the tracker or another
+    peer and the response they receive.
+
+2.1.  Order
+    There are 8 kind of request that would be made. Each request has a 
+    corresponding number:
+
+                        +--------+------------+
+                        | Number | Request    |
+                        +--------+------------+
+                        | 1      | Register   |
+                        +--------+------------+
+                        | 2      | Share      |
+                        +--------+------------+
+                        | 3      | Alive      |
+                        +--------+------------+
+                        | 4      | Query      |
+                        +--------+------------+
+                        | 5      | Download   |
+                        +--------+------------+
+                        | 6      | Remove     |
+                        +--------+------------+
+                        | 7      | Downloaded |
+                        +--------+------------+
+                        | 8      | Failed     |
+                        +--------+------------+
+
+2.2.  Types
+    
+    Massages in this protocol can be categorized in two way. First the security:
+        
+        P.  Plain Text (with encryption byte 0)
+        E.  Encrypted (with encryption byte 1)
+
+    or they can be categorized by their contents:
+
+        C.1.  [Encryption Byte][Plain Text]
+        C.2.  [Encryption Byte][JSON]
+        C.3.  [Encryption Byte][ID][JSON]
+        C.4.  [Bytes]
+
+    Combination of these strategies are showed by concatenating category names
+    (e.g. E.C.2 means a massage that is encrypted and in form of C.2 type so the
+    request would be like "[1][Encrypted JSON bytes]").
+
+    ID part of the massage is not encrypted and is used to find proper key to
+    decrypt the massage by the tracker. ID is sent to tracker in big endian form
+    and is 4 byte long.
+
+    An ok respond is a JSON massage (C.2 or C.3) which has attribute "status"
+    equal to "ok" inside them. An error respond is a JSON massage which has
+    "status" equal to "error" and a "msg" attribute which has a massage of cause
+    of the error.
+
+2.3.  Encryption
+    
+    This protocol uses Salsa20 encryption method to encrypt the massages in the
+    network. Tracker provides 32 Byte long keys both for communication between
+    peers and tracker itself, and, keys for peers to use to encrypt and decrypt
+    files when they transfer one.
+
+    Each peer has a key which will use it to communicate with tracker. Each
+    unique file also has a key, provided by the tracker. Seeder must use it to
+    encrypt the file and downloader must use it to decrypt what seeder sent.
+
+2.4.  Communication
+
+    Tracker uses UDP protocol to receive request and sending their responses.
+    Peers use UDP to communicate with tracker and TCP to communicate with each
+    other. Peers must use same port number in TCP and UDP communications as the
+    port number they use to communicate with tracker will be sent to downloader
+    peers so they can download the file from them. TCP connection between peers
+    has a timeout of 100 seconds (which if its exceeded, connection will be
+    closed).
+
+2.5.  Usage
+
+    In this section, usage, request type and response type of each request is
+    explained. Only peers make requests in this system.
+
+2.5.1.  Register
+
+    [           To] Tracker
+    [ Request Type] P.C.1
+    [Response Type] P.C.2
+    [        Usage] When a peer wants to enter the network it should introduce
+                    itself to the tracker. This would be done by content
+                    "register" inside the request. Tracker will generate a new
+                    id and key for the peer and sends it to the peer. Peer will
+                    use this id in C.3 massages and key to encrypt them.
+                    response will have the following attributes:
+
+                        - id        : id of peer in the network (int)
+                        - secret    : secret key of peer to encrypt requests
+                                      (str encoded with 'ISO-8859-1')
+
+    [    Schematic] Peer -------E.C.3-------> Tracker
+                         <------E.C.2--------
+
+2.5.2.  Share
+
+    [           To] Tracker
+    [ Request Type] E.C.3
+    [Response Type] E.C.2
+    [        Usage] When a peer wants to share a file with others it must submit
+                    it to the tracker. Tracker checks if the checksums are equal
+                    or not if the file has been shared before. If not, the
+                    checksum provided will be used as reference checksum. Also
+                    when it is the first time a file is shared, peer must
+                    provide size of the file too.
+                    Share request has an Alive request inside of it (i.e. first 
+                    alive signal is assumed when share request is done). from 
+                    then on, alive request must be sent (see 2.5.3).
+
+                    Request attributes are:
+
+                        - type      : 2, corresponding to order of it (int)
+                        - filename  : filename in the system (str)
+                        - checksum  : hexdigest of checksum of the file (str)
+                        - size      : size of the file (int)
+                    
+                    Response may be an error response of following reason:
+
+                        - Checksums does not match, If it isn't shared for the
+                          first time.
+                        - size attribute is note provided if file in not in the
+                          system.
+                    
+                    Or it is an ok response with additional following attribute:
+
+                        - secret    : secret key to use when peer is sending the
+                                      file to other peers (str encoded with 
+                                      'ISO-8859-1')
+    [    Schematic] Peer -------E.C.3-------> Tracker
+                         <------E.C.2--------
+        
+2.5.3.  Alive
+
+    [           To] Tracker
+    [ Request Type] E.C.3
+    [Response Type] E.C.2
+    [        Usage] After seeder shared the file to the tracker, it must sends
+                    alive requests to tracker so tracker knows this peer is
+                    alive.
+
+                    Request attribute is:
+
+                        - type      : 3, corresponding to order of it (int)
+
+                    Response will be an ok response without any additional
+                    attributes.
+    [    Schematic] Peer -------E.C.3-------> Tracker
+                         <------E.C.2--------
+
+2.5.4.  Query
+
+    [           To] Tracker
+    [ Request Type] E.C.3
+    [Response Type] E.C.2
+    [        Usage] When a downloader want to download a file, it first must
+                    know where to download the file. So, it make a query request
+                    and tracker respond with a list of providers. Tracker will
+                    send a list of all alive peers which shared the file.
+
+                    Request attributes are:
+
+                        - type      : 4, corresponding to order of it (int)
+                        - filename  : name of the file (str)
+
+                    Response may be an error response of following reason:
+
+                        - File does not exits in the database of tracker.
+
+                    If the file is in the database, tracker will first sends an
+                    ok respond with these additional attributes:
+
+                        - size      : size of the file (int)
+                        - secret    : secret of the file (str encoded with 
+                                      'ISO-8859-1')
+                        - parts     : number of following responses that will
+                                      be sent by tracker. see below. (int)
+
+                    parts can be zero meaning that there is no online provider. 
+                    if part is  positive #parts will be sent to the peer with 
+                    following attribute:
+
+                        - provider  : list of the providers. there will be 
+                                      maximum of 30 providers in the list 
+                                      (Technical reason: each provider will be
+                                      sent as '(ip,port)' and ip is maximum 19
+                                      bytes long and port is 5 bytes long when
+                                      in string. To ensure that we does not
+                                      exceed the limit of 1KB 30 of this 
+                                      structure is sent at maximum). (list)
+    [    Schematic] Peer -------E.C.3-------> Tracker
+                         <------E.C.2--------
+
+                                or
+
+                    Peer -------E.C.3-------> Tracker
+                         <------E.C.2-------- 
+                         <------E.C.2-------- ┑
+                                  .           |
+                                  .           ├ #{parts}
+                                  .           |
+                         <------E.C.2-------- ┙
+
+2.5.5.  Download
+
+    [           To] Seeder
+    [ Request Type] P.C.2
+    [Response Type] P.C.2, E.C.4
+    [        Usage] When downloader gets list of peers with query request from
+                    tracker, it should make a request to one of those providers
+                    to get the file. Request is made by the downloader with
+                    following attribute:
+
+                        - filename  : name of the requesting file
+                    
+                    Response will be an error with one of these reasons:
+
+                        - invalid filename, peer does not have the file. In this
+                          scenario, seeder must send a remove request 
+                          (see 2.5.6) to the tracker.
+                        
+                    Response will be an ok response with additional attribute:
+
+                        - chunk     : size of the chunk to send the file.
+
+                    
+                    Chunk attribute shows buffer size for receiving the file 
+                    (if chunk size is 1016 there would be 1024 byte of data sent
+                    because encryption). After this download peer must send a
+                    confirmation ok structure so provider starts to send the
+                    data else an error structure.
+                    
+                    Downloader knows the size of the file (from query request
+                    (see 2.5.4)) and from chunk size it should know how many
+                    packets will be sent to it (seeder does not provide this
+                    information).
+                    
+                    Also downloader must sends an ok respond to seeder after
+                    each response it receives.
+                    File is send by E.C.4 massages. seeder knows the secret by
+                    share request (see 2.5.2) and downloader knows it by query
+                    request (see 2.5.4).
+                    
+                    If  a download fails (e.g. by timeout) downloader should
+                    report this to the tracker (see 2.5.8) and if it is 
+                    successful, it should report that too (see 2.5.9).
+    [    Schematic] Peer -------P.C.2-------> Peer
+                         <------P.C.2--------
+                         --------ok---------> 
+                         <------E.C.2-------- ┑
+                         --------ok---------> |
+                                  .           |
+                                  .           ├ ⌈size/(chunk + 8)⌉
+                                  .           |
+                         <------E.C.2-------- |
+                         --------ok---------> ┙
+
+2.5.6.  Remove
+
+    [           To] Tracker
+    [ Request Type] E.C.3
+    [Response Type] E.C.2
+    [        Usage] When a downloader asks a seeder for a file which seeder does
+                    not have, seeder must send a remove request so tracker
+                    removes the record of seeder having this file. This will be
+                    useful if seeder has deleted the file or corrupted it so it
+                    cannot share the file because of bad checksum. Request 
+                    attributes are:
+
+                        - type      : 6, corresponding to order of it (int)
+                        - filename  : name of the file (str)
+
+                    Response may be an error response of following reason:
+
+                        - This record does not exist in the system
+
+                    Response will be an ok response without any additional
+                    attributes.
+    [    Schematic] Peer -------E.C.3-------> Tracker
+                         <------E.C.2--------
+
+2.5.7.  Downloaded
+
+    [           To] Tracker
+    [ Request Type] E.C.3
+    [Response Type] E.C.2
+    [        Usage] When a peer downloads a file it should report it to the
+                    tracker with its checksum. If checksums match tracker would
+                    add it to the providers of that file and if not an error 
+                    will be responded.
+                    
+                    Request attributes are:
+
+                        - type      : 7, corresponding to order of it (int)
+                        - filename  : filename in the system (str)
+                        - checksum  : hexdigest of checksum of the file (str)
+
+                    Response may be an error response of following reason:
+
+                        - Checksums does not match, If it isn't shared for the
+                          first time.
+                    
+                    Or it is an ok response with additional following attribute:
+
+                        - secret    : secret key to use when peer is sending the
+                                      file to other peers (str encoded with 
+                                      'ISO-8859-1')
+
+2.5.8.  Failed
+    [           To] Tracker
+    [ Request Type] E.C.3
+    [Response Type] E.C.2
+    [        Usage] If a download is failed because of the seeder, downloader
+                    must report it to the tracker.
+
+                    Request attributes are:
+
+                        - type      : 8, corresponding to order of it (int)
+                        - filename  : filename in the system (str)
+                        - provider  : list of ip and port of the provider (list)
+                    
+                    Response will be an ok response without any additional
+                    attributes.
+    [    Schematic] Peer -------E.C.3-------> Tracker
+                         <------E.C.2--------
+
+3.  Security Considerations
+    Encryption is used in the system so requests and responses are secure. also
+    keys are sent encrypted (except for the key in the registration). Filed,
+    remove and downloaded requests can be beneficial to monitor the system for
+    bad requests. 
+
+Author's Address
+
+    Ali Hatami Tajik
+    Email: a.hatam [at] sharif [dot] edu
+    URI:   https://www.alihatamitajik.ir   
