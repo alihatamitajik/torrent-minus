@@ -12,34 +12,44 @@ from pathlib import Path
 from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
 from util.decor import threaded
 from util.encrypt import encrypt, decrypt
+from util.console import LogConsole
 
 PEER_CONFIG = 'conf/peer.conf'
 
 
 class Peer:
     def __init__(self, config, args) -> None:
+        self.init_config(args, config)
+        self.init_logger(args.name)
+        self.id = None
+        self.key = None
+        self.torrent = TorrentProtocol()
+        self.init_sockets()
+        self.file_keys = {}
+        self.console = LogConsole(self.handle_command, args.name)
+
+    def init_sockets(self):
+        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp.bind(self.listen)
+        self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp.bind(self.listen)
+
+    def init_config(self, args, config):
         self.tracker = args.tracker
         self.listen = args.listen
         self.dir = args.basedir
         self.ttl = float(config['SETTING']['PTTL'])
         self.buffer_size = int(config['SETTING']['BufferSize'])
         self.chunk_size = int(config['SETTING']['ChunkSize'])
-        if 'name' in args:
-            logging.basicConfig(filename=f'log/{args.name}.log',
-                                filemode='w',
-                                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                                level=logging.INFO)
-            self.logger = logging.getLogger(args.name)
-        else:
-            self.logger = logging.getLogger()
-        self.id = None
-        self.key = None
-        self.torrent = TorrentProtocol()
-        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp.bind(self.listen)
-        self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp.bind(self.listen)
-        self.file_keys = {}
+
+    def init_logger(self, name):
+        self.logger = logging.getLogger(name)
+        file_handler = logging.FileHandler(f'log/{name}.log', 'w')
+        file_handler.setFormatter(
+            logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        file_handler.setLevel(logging.INFO)
+        self.logger.addHandler(file_handler)
+        self.logger.setLevel(logging.INFO)
 
     def register(self):
         """register peer in the tracker and saves the id
@@ -73,14 +83,14 @@ class Peer:
         peer_sock.send(self.torrent.respond(status="error", msg=msg))
         peer_sock.close()
         self.logger.warning(
-            f'({addr}) requested [{filename}] but does not exist.')
+            f'({addr}) requested File \'{filename}\' but does not exist.')
         self.send_to_tracker(TR.REMOVE, filename=filename)
         resp = self.get_response()
         if resp['status'] == 'ok':
-            self.logger.info(f'false ({filename}) removed from tracker')
+            self.logger.info(f'false File \'{filename}\' removed from tracker')
         else:
             self.logger.critical(
-                f'false [{filename}] requested but tracker can\'t remove it')
+                f'false File \'{filename}\' requested but tracker can\'t remove it')
 
     def send_file(self, file_dir: Path, key: bytes, peer_sock: socket.socket):
         """sends file to the peer in chunks
@@ -127,14 +137,16 @@ class Peer:
         """
         resp = self.torrent.read_response(peer_sock.recv(self.buffer_size))
         filename = resp['filename']
-        self.logger.info(f'{addr} requested for [{filename}]')
+        self.logger.info(f'{addr} requested for File \'{filename}\'')
         file_dir = self.dir / filename
         if file_dir.is_file():
             try:
                 self.send_file(file_dir, self.file_keys[filename], peer_sock)
-                self.logger.info(f'[{filename}] sent to {addr} successfully.')
+                self.logger.info(
+                    f'File \'{filename}\' sent to {addr} successfully.')
             except:
-                self.logger.error(f'Send [{filename}] to ({addr}) discarded.')
+                self.logger.error(
+                    f'Send File \'{filename}\' to ({addr}) discarded.')
                 peer_sock.close()
         else:
             self.handle_false_filename(filename, peer_sock, addr)
@@ -205,7 +217,7 @@ class Peer:
             resp = self.get_response()
             if resp['status'] == 'ok':
                 self.file_keys[filename] = resp['secret'].encode('ISO-8859-1')
-                self.logger.info(f'[{filename}] shared')
+                self.logger.info(f'File \'{filename}\' shared')
             else:
                 raise PermissionError(resp['msg'])
 
@@ -237,7 +249,7 @@ class Peer:
             for _ in range(query['parts']):
                 resp = self.get_response()
                 query['provider'].extend(resp['provider'])
-            self.logger.info(f'query for [{filename}] received.')
+            self.logger.info(f'query for File \'{filename}\' received.')
             return query
         else:
             raise LookupError(query['msg'])
@@ -260,12 +272,12 @@ class Peer:
                 for _ in track(range(num_chunks), description="Downloading..."):
                     file.write(decrypt(s.recv(buffer_size), key))
                     s.send(self.torrent.respond(status="ok"))
-            self.logger.info(f'[{filename}] received from {provider}')
+            self.logger.info(f'File \'{filename}\' received from {provider}')
             s.close()
             return True
         else:
             self.logger.error(
-                f'[{filename}] file does not exist in {provider}')
+                f'File \'{filename}\' file does not exist in {provider}')
             s.close()
             return False
 
@@ -318,6 +330,35 @@ class Peer:
             else:
                 self.make_downloaded_req(filename)
 
+    def get_filter(self, command: str):
+        if command == "all logs":
+            return lambda x: True
+        elif command.startswith("logs"):
+            split = command.split(maxsplit=1)
+            params = "" if len(split) == 1 else split[1]
+            split = params.split("-")
+            inc = split[0]
+            exc = "" if len(split) == 1 else split[1]
+            return lambda x: all(i in x for i in inc.split()) \
+                and not any(e in x for e in exc.split())
+        else:
+            return lambda x: False
+
+    def get_empty_massage(self, command: str):
+        if command == "all logs":
+            return "[bold][i]Nothing[/i] logged yet[/bold]"
+        else:
+            return "[bold]No results found for your query[/bold] :x:"
+
+    def handle_command(self, command: str):
+        with open(self.logger.handlers[0].baseFilename, 'r') as file:
+            printed = False
+            for log in filter(self.get_filter(command), file):
+                printed = True
+                yield log.strip()
+            if not printed:
+                yield self.get_empty_massage(command)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -335,7 +376,7 @@ def parse_args():
     parser.add_argument('listen',
                         help="ip:port for listening when in share mode.",
                         type=ip_port_type)
-    parser.add_argument('-n', '--name', required=False,
+    parser.add_argument('-n', '--name', required=True,
                         help='name of the log file. log file will be stored in "log/[name].log".')
     parser.add_argument('-d', '--basedir',
                         help='base directory of the peer. filenames will be searched concatenated to base directory. defaults to "tmp".',
@@ -365,7 +406,7 @@ def main():
         else:
             peer.share(args.file)
             peer.start_service()
-        # start the console
+        peer.console.start()
     except:
         peer.logger.exception('operation failed')
 

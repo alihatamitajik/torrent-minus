@@ -13,6 +13,7 @@ from util import ip_port_type, TorrentProtocol, TorrentRequest as TR
 from util import divide_part
 from util.encrypt import generate_key
 from util.decor import threaded
+from util.console import LogConsole
 
 SERVER_CONFIG = 'conf/server.conf'
 
@@ -130,6 +131,7 @@ class Tracker(UdpServer):
         self.file_db = {}
         self.provider_lock = threading.Lock()
         self.providers = set()  # set of tuple(filename, id)s of providers
+        self.console = LogConsole(self.handle_command, "tracker")
 
     def _init_logger(self, conf):
         logging.config.fileConfig(conf['SETTING']['LoggerConfig'])
@@ -150,7 +152,7 @@ class Tracker(UdpServer):
             r_type, fields = self.torrent.read_req(b_msg, self.key_extractor)
             getattr(self, f"_handle_{r_type}")(client, **fields)
         except:
-            self.error_logger.exception(f'[{client}] requested [{b_msg}]')
+            self.error_logger.exception(f'{client} requested {b_msg}')
 
     @property
     def key_extractor(self):
@@ -193,7 +195,7 @@ class Tracker(UdpServer):
         file = TorFile(name, int(size), checksum)
         with self.file_lock:
             self.file_db[name] = file
-            self.logger.info(f'[{name}] added by ID({id})')
+            self.logger.info(f'File \'{name}\' added by ID({id})')
             return file
 
     def add_provider(self,  id: int, client, file: TorFile, checksum=None):
@@ -205,7 +207,7 @@ class Tracker(UdpServer):
             file = self.file_db[file.name]
             if checksum != file.checksum:
                 self.logger.warning(
-                    f'ID({id}) does not added to [{file.name}] due to wrong checksum ({checksum})')
+                    f'ID({id}) does not added to File \'{file.name}\' due to wrong checksum ({checksum})')
                 self.send_error(id, client, f'checksums does not match')
                 return
         with self.provider_lock:
@@ -213,7 +215,7 @@ class Tracker(UdpServer):
             self.send_respond(id, client,
                               status="ok",
                               secret=file.key.decode('ISO-8859-1'))
-            self.logger.info(f'ID({id}) provides [{file.name}]')
+            self.logger.info(f'ID({id}) provides File \'{file.name}\'')
 
     @check_missing(type=TR.SHARE)
     def _handle_share(self, client, **kwargs):
@@ -283,7 +285,7 @@ class Tracker(UdpServer):
         if not file:
             self.send_error(id, client, f'file [{filename}] does not exists')
             self.logger.warning(
-                f'ID({id}) requested query for non-existing [{filename}]')
+                f'ID({id}) requested query for non-existing \'{filename}\'')
         else:
             providers = list(divide_part(self.get_providers(file.name), 30))
             self.send_respond(id, client, status="ok", size=file.size,
@@ -292,7 +294,7 @@ class Tracker(UdpServer):
             for provider in providers:
                 self.send_respond(id, client, status="ok", provider=provider)
             self.logger.info(
-                f'{len(providers)} providers sent to ID({id}) for Query[{filename}]')
+                f'{len(providers)} providers sent to ID({id}) for Query \'{filename}\'')
 
     @check_missing(TR.REMOVE)
     def _handle_remove(self, client, **kwargs):
@@ -309,14 +311,15 @@ class Tracker(UdpServer):
             with self.provider_lock:
                 self.providers.remove((filename, id))
             self.send_respond(id, client, status="ok")
-            self.logger.info(f"({filename}, {id}) pair is removed from DB.")
+            self.logger.info(
+                f"(\'{filename}\', {id}) pair is removed from DB.")
         except KeyError:
             self.send_respond(id, client, status="error")
-            self.logger.warning(f"({filename}, {id}) does not exists.")
+            self.logger.warning(f"(\'{filename}\', {id}) does not exists.")
         except:
             self.send_respond(id, client, status="error", msg="Internal Error")
             self.logger.exception(
-                f"error while tried to remove ({filename}, {id}) pair")
+                f"error while tried to remove (\'{filename}\', {id}) pair")
 
     @check_missing(TR.DOWNLOADED)
     def _handle_downloaded(self, client, **kwargs):
@@ -327,11 +330,12 @@ class Tracker(UdpServer):
         file = self.file_db.get(filename, None)
         if file:
             self.add_provider(id, client, file, checksum)
-            self.logger.info(f"ID({id}) downloaded [{filename}] successfully")
+            self.logger.info(
+                f"ID({id}) downloaded File \'{filename}\' successfully")
         else:
             self.send_error(id, client, msg="bad file.")
             self.logger.warning(
-                f'ID({id}) downloaded non existing [{filename}]')
+                f'ID({id}) downloaded non existing File \'{filename}\'')
 
     @check_missing(TR.FAILED)
     def _handle_failed(self, client, **kwargs):
@@ -340,8 +344,46 @@ class Tracker(UdpServer):
         filename = kwargs['filename']
         provider = tuple(kwargs['provider'])
         self.logger.warning(
-            f'ID({id}) failed to download [{filename}] from {provider}')
+            f'ID({id}) failed to download File \'{filename}\' from {provider}')
         self.send_respond(id, client, status="ok")
+
+    def get_filter(self, command: str):
+        if command == "all logs":
+            return lambda x: True
+        elif command.startswith("peer"):
+            split = command.split(maxsplit=2)
+            id = split[1]
+            params = "" if len(split) == 2 else split[2]
+            split = params.split("-")
+            inc = split[0]
+            exc = "" if len(split) == 1 else split[1]
+            id = "ID(" + id + ")"
+            return lambda x: id in x \
+                and all(i in x for i in inc.split()) \
+                and not any(e in x for e in exc.split())
+        elif command.startswith("file"):
+            if "-all" in command:
+                return lambda x: 'File' in x
+            else:
+                filename = command[4:].strip()
+                return lambda x: filename in x
+        else:
+            return lambda x: False
+
+    def get_empty_massage(self, command: str):
+        if command == "all logs":
+            return "[bold][i]Nothing[/i] logged yet[/bold]"
+        else:
+            return "[bold]No results found for your query[/bold] :x:"
+
+    def handle_command(self, command: str):
+        with open(self.logger.handlers[0].baseFilename, 'r') as file:
+            printed = False
+            for log in filter(self.get_filter(command), file):
+                printed = True
+                yield log.strip()
+            if not printed:
+                yield self.get_empty_massage(command)
 
 
 def load_config_file():
@@ -378,3 +420,4 @@ if __name__ == "__main__":
     conf = load_config()
     tracker = Tracker(conf)
     tracker.start_server()
+    tracker.console.start()
