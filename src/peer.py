@@ -107,7 +107,7 @@ class Peer:
         resp = self.torrent.read_response(peer_sock.recv(self.buffer_size))
         if resp['status'] == 'ok':
             with open(file_dir, 'rb') as file:
-                while chunk := file.read(self.chunk_size - 8):
+                while chunk := file.read(self.chunk_size):
                     peer_sock.send(encrypt(chunk, key))
                     resp = self.torrent.read_response(
                         peer_sock.recv(self.buffer_size))

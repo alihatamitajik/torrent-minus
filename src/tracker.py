@@ -411,9 +411,8 @@ def load_config():
     parser = get_parser()
     args = parser.parse_args()
     if args.bind:
-        ip, port = args.bind.split(':')
-        config['NET']['Ip'] = ip
-        config['NET']['Port'] = port
+        config['NET']['Ip'] = args.bind[0]
+        config['NET']['Port'] = str(args.bind[1])
     return config
 
 
